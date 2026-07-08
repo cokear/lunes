@@ -43,7 +43,7 @@ jobs:
         sleep 5
         
         # 4. 验证 HTTP 代理是否畅通 (由于是给 DP 用的，这里测 HTTP)
-        curl -s --connect-timeout 10 -x http://127.0.0.1:8080 https://api.ipify.org && echo "✅ Tunnel OK"
+        curl -s -o /dev/null --connect-timeout 10 -x http://127.0.0.1:8080 https://api.ipify.org && echo "✅ Tunnel OK"
         
     - name: Run Task (Strongest Mode)
       id: renewal
