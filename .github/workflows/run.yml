@@ -1,0 +1,89 @@
+name: Lunes Renewal Service
+
+on:
+  repository_dispatch:
+    types: [lunes]          # Webhook 触发关键词：lunes
+  workflow_dispatch:        # 保留手动点击触发按钮
+
+jobs:
+  run-renewal:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install System Deps (Xvfb/Chrome)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb google-chrome-stable
+        
+    - name: Install Python Deps
+      run: |
+        pip install -r requirements.txt
+        pip install DrissionPage
+
+    - name: Setup Proxy Tunnel (Sing-box)
+      env:
+        # 注意：这里传入供 convert_proxy.py 读取的变量。
+        # 如果您的脚本读的是 PROXY，请将变量名改回 PROXY
+        PROXY_STR: ${{ secrets.PROXY }}
+      run: |
+        # 1. 下载并提取 sing-box (1.9.3 版本)
+        wget -qO- https://github.com/SagerNet/sing-box/releases/download/v1.9.3/sing-box-1.9.3-linux-amd64.tar.gz | tar xz
+        sudo mv sing-box-1.9.3-linux-amd64/sing-box /usr/local/bin/
+        
+        # 2. 运行同目录的转换脚本，生成 config.json (监听 8080)
+        python convert_proxy.py
+        
+        # 3. 后台运行 sing-box
+        nohup sing-box run -c config.json > singbox.log 2>&1 &
+        sleep 5
+        
+        # 4. 验证 HTTP 代理是否畅通 (由于是给 DP 用的，这里测 HTTP)
+        curl -s --connect-timeout 10 -x http://127.0.0.1:8080 https://api.ipify.org && echo "✅ Tunnel OK"
+        
+    - name: Run Task (Strongest Mode)
+      id: renewal
+      env:
+        # 喂给 Python 脚本的代理，改为 HTTP 8080 端口
+        PROXY: "http://127.0.0.1:8080"
+        USERNAME: ${{ secrets.USERNAME }}
+        PASSWORD: ${{ secrets.PASSWORD }}
+      run: |
+        xvfb-run -a python renewal.py
+        
+    - name: Send Telegram Notification
+      if: always()
+      env:
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        STATUS="${{ job.status }}"
+        if [ "$STATUS" == "success" ]; then
+          MSG="✅ *Lunes 续期成功*%0A%0A⏰ $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+        else
+          MSG="❌ *Lunes 续期失败*"
+        fi
+        
+        curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+          -d "chat_id=${TG_CHAT_ID}" \
+          -d "text=${MSG}" \
+          -d "parse_mode=Markdown"
+        
+        SCREENSHOT=$(ls -t artifacts/*.png 2>/dev/null | head -1)
+        if [ -n "$SCREENSHOT" ]; then
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto" \
+            -F "chat_id=${TG_CHAT_ID}" \
+            -F "photo=@${SCREENSHOT}"
+        fi
+        
+    - name: Upload Screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: screenshots
+        path: artifacts/
